@@ -210,7 +210,7 @@ def preprocess_dataset(trainset_dir, exp_dir, sr, n_p):
     per = 3.0 if config.is_half else 3.7
     cmd = '"%s" infer/modules/train/preprocess.py "%s" %s %s "%s/logs/%s" %s %.1f' % (
         config.python_cmd,
-        trainset_dir,
+        os.path.abspath('voices\\'+trainset_dir),
         sr,
         n_p,
         now_dir,
@@ -404,10 +404,10 @@ def get_pretrained_models(path_str, f0_str, sr2):
             sr2,
         )
     return (
-        "assets/pretrained%s/%sG%s.pth" % (path_str, f0_str, sr2)
+        "%sG%s.pth" % (f0_str, sr2)
         if if_pretrained_generator_exist
         else "",
-        "assets/pretrained%s/%sD%s.pth" % (path_str, f0_str, sr2)
+        "%sD%s.pth" % (f0_str, sr2)
         if if_pretrained_discriminator_exist
         else "",
     )
@@ -416,7 +416,11 @@ def get_pretrained_models(path_str, f0_str, sr2):
 def change_sr2(sr2, if_f0_3, version19):
     path_str = "" if version19 == "v1" else "_v2"
     f0_str = "f0" if if_f0_3 else ""
-    return get_pretrained_models(path_str, f0_str, sr2)
+    pretrained = get_pretrained_models(path_str, f0_str, sr2)
+    return (
+        {"choices": list_pretrained("G", version19, sr2, if_f0_3), "value": pretrained[0], "__type__": "update"},
+        {"choices": list_pretrained("D", version19, sr2, if_f0_3), "value": pretrained[1], "__type__": "update"},
+    )
 
 
 def change_version19(sr2, if_f0_3, version19):
@@ -429,19 +433,28 @@ def change_version19(sr2, if_f0_3, version19):
         else {"choices": ["40k", "48k", "32k"], "__type__": "update", "value": sr2}
     )
     f0_str = "f0" if if_f0_3 else ""
+    pretrained = get_pretrained_models(path_str, f0_str, sr2)
+
     return (
-        *get_pretrained_models(path_str, f0_str, sr2),
+        {"choices": list_pretrained("G", version19, sr2, if_f0_3), "value": pretrained[0], "__type__": "update"},
+        {"choices": list_pretrained("D", version19, sr2, if_f0_3), "value": pretrained[1], "__type__": "update"},
         to_return_sr2,
     )
 
 
 def change_f0(if_f0_3, sr2, version19):  # f0method8,pretrained_G14,pretrained_D15
     path_str = "" if version19 == "v1" else "_v2"
+    f0_str = "f0" if if_f0_3 == True else ""
+    pretrained = get_pretrained_models(path_str, f0_str, sr2)
     return (
         {"visible": if_f0_3, "__type__": "update"},
         {"visible": if_f0_3, "__type__": "update"},
-        *get_pretrained_models(path_str, "f0" if if_f0_3 == True else "", sr2),
+        {"choices": list_pretrained("G", version19, sr2, if_f0_3), "value": pretrained[0], "__type__": "update"},
+        {"choices": list_pretrained("D", version19, sr2, if_f0_3), "value": pretrained[1], "__type__": "update"},
     )
+
+
+global p, PID
 
 
 # but3.click(click_train,[exp_dir1,sr2,if_f0_3,save_epoch10,total_epoch11,batch_size12,if_save_latest13,pretrained_G14,pretrained_D15,gpus16])
@@ -460,6 +473,8 @@ def click_train(
     if_cache_gpu17,
     if_save_every_weights18,
     version19,
+    if_retrain_collapse20,
+    if_stop_on_fit21,
 ):
     # 生成filelist
     exp_dir = "%s/logs/%s" % (now_dir, exp_dir1)
@@ -515,13 +530,13 @@ def click_train(
     if if_f0_3:
         for _ in range(2):
             opt.append(
-                "%s/logs/mute/0_gt_wavs/mute%s.wav|%s/logs/mute/3_feature%s/mute.npy|%s/logs/mute/2a_f0/mute.wav.npy|%s/logs/mute/2b-f0nsf/mute.wav.npy|%s"
+                "%s/assets/mute/0_gt_wavs/mute%s.wav|%s/assets/mute/3_feature%s/mute.npy|%s/assets/mute/2a_f0/mute.wav.npy|%s/assets/mute/2b-f0nsf/mute.wav.npy|%s"
                 % (now_dir, sr2, now_dir, fea_dim, now_dir, now_dir, spk_id5)
             )
     else:
         for _ in range(2):
             opt.append(
-                "%s/logs/mute/0_gt_wavs/mute%s.wav|%s/logs/mute/3_feature%s/mute.npy|%s"
+                "%s/assets/mute/0_gt_wavs/mute%s.wav|%s/assets/mute/3_feature%s/mute.npy|%s"
                 % (now_dir, sr2, now_dir, fea_dim, spk_id5)
             )
     shuffle(opt)
@@ -550,48 +565,55 @@ def click_train(
                 sort_keys=True,
             )
             f.write("\n")
-    if gpus16:
-        cmd = (
-            '"%s" infer/modules/train/train.py -e "%s" -sr %s -f0 %s -bs %s -g %s -te %s -se %s %s %s -l %s -c %s -sw %s -v %s'
-            % (
-                config.python_cmd,
-                exp_dir1,
-                sr2,
-                1 if if_f0_3 else 0,
-                batch_size12,
-                gpus16,
-                total_epoch11,
-                save_epoch10,
-                "-pg %s" % pretrained_G14 if pretrained_G14 != "" else "",
-                "-pd %s" % pretrained_D15 if pretrained_D15 != "" else "",
-                1 if if_save_latest13 == i18n("是") else 0,
-                1 if if_cache_gpu17 == i18n("是") else 0,
-                1 if if_save_every_weights18 == i18n("是") else 0,
-                version19,
-            )
+    cmd = (
+        '"%s" infer/modules/train/train.py -e "%s" -sr %s -f0 %s -bs %s %s -te %s -se %s %s %s -l %s -c %s -sw %s -v %s %s %s'
+        % (
+            config.python_cmd,
+            exp_dir1,
+            sr2,
+            1 if if_f0_3 else 0,
+            batch_size12,
+            ("-g %s" % gpus16) if gpus16 else "",
+            total_epoch11,
+            save_epoch10,
+            ("-pg assets\pretrained%s\%s" % ("_v2" if version19 == "v2" else "", pretrained_G14)) if pretrained_G14 != "" else "",
+            ("-pd assets\pretrained%s\%s" % ("_v2" if version19 == "v2" else "", pretrained_D15)) if pretrained_D15 != "" else "",
+            1 if if_save_latest13 == i18n("是") else 0,
+            1 if if_cache_gpu17 == i18n("是") else 0,
+            1 if if_save_every_weights18 == i18n("是") else 0,
+            version19,
+            ("-sof %s" % (1 if if_stop_on_fit21 == True else 0)) if if_stop_on_fit21 else "",
+            ("-rc %s" % (1 if if_retrain_collapse20 == True else 0)) if if_retrain_collapse20 else "",
         )
-    else:
-        cmd = (
-            '"%s" infer/modules/train/train.py -e "%s" -sr %s -f0 %s -bs %s -te %s -se %s %s %s -l %s -c %s -sw %s -v %s'
-            % (
-                config.python_cmd,
-                exp_dir1,
-                sr2,
-                1 if if_f0_3 else 0,
-                batch_size12,
-                total_epoch11,
-                save_epoch10,
-                "-pg %s" % pretrained_G14 if pretrained_G14 != "" else "",
-                "-pd %s" % pretrained_D15 if pretrained_D15 != "" else "",
-                1 if if_save_latest13 == i18n("是") else 0,
-                1 if if_cache_gpu17 == i18n("是") else 0,
-                1 if if_save_every_weights18 == i18n("是") else 0,
-                version19,
-            )
-        )
+    )
     logger.info(cmd)
+    global p, PID
     p = Popen(cmd, shell=True, cwd=now_dir)
+    PID = p.pid
+
     p.wait()
+    batchSize = batch_size12
+    colEpoch = 0
+    while if_retrain_collapse20:
+        if not os.path.exists(f"logs/{exp_dir1}/col"):
+            break
+        with open(f"logs/{exp_dir1}/col") as f:
+            col = f.read().split(",")
+            if colEpoch < int(col[1]):
+                colEpoch = int(col[1])
+                logger.info(f"Epoch to beat {col[1]}")
+                if batchSize != batch_size12:
+                    batchSize = batch_size12 + 1
+            batchSize -= 1
+        if batchSize < 1:
+            break
+        p = Popen(
+            cmd.replace(f"-bs {batch_size12}", f"-bs {batchSize}"),
+            shell=True,
+            cwd=now_dir,
+        )
+        PID = p.pid
+        p.wait()
     return "训练结束, 您可查看控制台训练日志或实验文件夹下的train.log"
 
 
@@ -705,7 +727,7 @@ def train1key(
 
     # step1:处理数据
     yield get_info_str(i18n("step1:正在处理数据"))
-    [get_info_str(_) for _ in preprocess_dataset(trainset_dir4, exp_dir1, sr2, np7)]
+    [get_info_str(_) for _ in preprocess_dataset(os.path.abspath('voices\\'+trainset_dir4), exp_dir1, sr2, np7)]
 
     # step2a:提取音高
     yield get_info_str(i18n("step2:正在提取音高&正在提取特征"))
@@ -727,8 +749,8 @@ def train1key(
         total_epoch11,
         batch_size12,
         if_save_latest13,
-        pretrained_G14,
-        pretrained_D15,
+        ("pretrained%s\%s" % "_v2" if version19 == "v2" else "", pretrained_G14),
+        ("pretrained%s\%s" % "_v2" if version19 == "v2" else "", pretrained_D15),
         gpus16,
         if_cache_gpu17,
         if_save_every_weights18,
@@ -768,6 +790,16 @@ def change_f0_method(f0method8):
         visible = False
     return {"visible": visible, "__type__": "update"}
 
+def list_pretrained(model, version19, sr2, if_f0_3):
+    directory_path = 'assets\pretrained%s' % ("_v2" if version19 == "v2" else "")
+    files = os.listdir(directory_path)
+    filtered_files = [file for file in files if model in file and sr2 in file and ("f0" in file if if_f0_3 else "f0" not in file)]
+    return filtered_files
+
+def list_voices():
+    directory = 'voices'
+    folders = [f for f in os.listdir(directory) if os.path.isdir(os.path.join(directory, f))]
+    return folders
 
 with gr.Blocks(title="RVC WebUI") as app:
     gr.Markdown("## RVC WebUI")
@@ -1141,8 +1173,12 @@ with gr.Blocks(title="RVC WebUI") as app:
                     )
                 )
                 with gr.Row():
-                    trainset_dir4 = gr.Textbox(
-                        label=i18n("输入训练文件夹路径"), value=i18n("E:\\语音音频+标注\\米津玄师\\src")
+                    trainset_dir4 = gr.Dropdown(
+                        label=i18n("输入训练文件夹路径"), 
+                        value=i18n("E:\\语音音频+标注\\米津玄师\\src"),
+                        allow_custom_value=True,
+                        choices=list_voices(),
+                        interactive=True,
                     )
                     spk_id5 = gr.Slider(
                         minimum=0,
@@ -1154,6 +1190,7 @@ with gr.Blocks(title="RVC WebUI") as app:
                     )
                     but1 = gr.Button(i18n("处理数据"), variant="primary")
                     info1 = gr.Textbox(label=i18n("输出信息"), value="")
+                    trainset_dir4.select(lambda value:value,[trainset_dir4],[exp_dir1])
                     but1.click(
                         preprocess_dataset,
                         [trainset_dir4, exp_dir1, sr2, np7],
@@ -1214,59 +1251,86 @@ with gr.Blocks(title="RVC WebUI") as app:
             with gr.Group():
                 gr.Markdown(value=i18n("step3: 填写训练设置, 开始训练模型和索引"))
                 with gr.Row():
-                    save_epoch10 = gr.Slider(
-                        minimum=1,
-                        maximum=50,
-                        step=1,
-                        label=i18n("保存频率save_every_epoch"),
-                        value=5,
-                        interactive=True,
-                    )
-                    total_epoch11 = gr.Slider(
-                        minimum=2,
-                        maximum=1000,
-                        step=1,
-                        label=i18n("总训练轮数total_epoch"),
-                        value=20,
-                        interactive=True,
-                    )
-                    batch_size12 = gr.Slider(
-                        minimum=1,
-                        maximum=40,
-                        step=1,
-                        label=i18n("每张显卡的batch_size"),
-                        value=default_batch_size,
-                        interactive=True,
-                    )
-                    if_save_latest13 = gr.Radio(
-                        label=i18n("是否仅保存最新的ckpt文件以节省硬盘空间"),
-                        choices=[i18n("是"), i18n("否")],
-                        value=i18n("否"),
-                        interactive=True,
-                    )
-                    if_cache_gpu17 = gr.Radio(
-                        label=i18n(
-                            "是否缓存所有训练集至显存. 10min以下小数据可缓存以加速训练, 大数据缓存会炸显存也加不了多少速"
-                        ),
-                        choices=[i18n("是"), i18n("否")],
-                        value=i18n("否"),
-                        interactive=True,
-                    )
-                    if_save_every_weights18 = gr.Radio(
-                        label=i18n("是否在每次保存时间点将最终小模型保存至weights文件夹"),
-                        choices=[i18n("是"), i18n("否")],
-                        value=i18n("否"),
-                        interactive=True,
-                    )
+                    with gr.Column():
+                        save_epoch10 = gr.Slider(
+                            minimum=0,
+                            maximum=100,
+                            step=1,
+                            label=i18n("保存频率save_every_epoch"),
+                            value=5,
+                            interactive=True,
+                        )
+                        if_save_latest13 = gr.Radio(
+                            label=i18n("是否仅保存最新的ckpt文件以节省硬盘空间"),
+                            choices=[i18n("是"), i18n("否")],
+                            value=i18n("否"),
+                            interactive=True,
+                        )
+                        if_save_every_weights18 = gr.Radio(
+                            label=i18n("是否在每次保存时间点将最终小模型保存至weights文件夹"),
+                            choices=[i18n("是"), i18n("否")],
+                            value=i18n("否"),
+                            interactive=True,
+                        )
+                    with gr.Column():
+                        batch_size12 = gr.Slider(
+                            minimum=1,
+                            maximum=40,
+                            step=1,
+                            label=i18n("每张显卡的batch_size"),
+                            value=default_batch_size,
+                            interactive=True,
+                        )
+                        if_cache_gpu17 = gr.Radio(
+                            label=i18n(
+                                "是否缓存所有训练集至显存. 10min以下小数据可缓存以加速训练, 大数据缓存会炸显存也加不了多少速"
+                            ),
+                            choices=[i18n("是"), i18n("否")],
+                            value=i18n("否"),
+                            interactive=True,
+                        )
+                    with gr.Column():
+                        total_epoch11 = gr.Slider(
+                            minimum=2,
+                            maximum=1000,
+                            step=1,
+                            label=i18n("总训练轮数total_epoch"),
+                            value=20,
+                            interactive=True,
+                        )
+                        if_retrain_collapse20 = gr.Checkbox(
+                            label=i18n(
+                                "Reload from checkpoint before a mode collapse and try training it again"
+                            ),
+                            value=False,
+                            interactive=True,
+                        )
+                        if_stop_on_fit21 = gr.Checkbox(
+                            label=i18n("Stop training early if no improvement detected"),
+                            value=False,
+                            interactive=True,
+                        )
                 with gr.Row():
-                    pretrained_G14 = gr.Textbox(
+                    # pretrained_G14 = gr.Textbox(
+                    #     label=i18n("加载预训练底模G路径"),
+                    #     value="assets/pretrained_v2/f0G40k.pth",
+                    #     interactive=True,
+                    # )
+                    pretrained_G14 = gr.Dropdown(
                         label=i18n("加载预训练底模G路径"),
-                        value="assets/pretrained_v2/f0G40k.pth",
+                        value="f0G40k.pth",
+                        choices=list_pretrained('G', version19.value, sr2.value, if_f0_3.value),
                         interactive=True,
                     )
-                    pretrained_D15 = gr.Textbox(
+                    # pretrained_D15 = gr.Textbox(
+                    #     label=i18n("加载预训练底模D路径"),
+                    #     value="assets/pretrained_v2/f0D40k.pth",
+                    #     interactive=True,
+                    # )
+                    pretrained_D15 = gr.Dropdown(
                         label=i18n("加载预训练底模D路径"),
-                        value="assets/pretrained_v2/f0D40k.pth",
+                        value="f0D40k.pth",
+                        choices=list_pretrained('D',version19.value, sr2.value, if_f0_3.value),
                         interactive=True,
                     )
                     sr2.change(
@@ -1310,6 +1374,8 @@ with gr.Blocks(title="RVC WebUI") as app:
                             if_cache_gpu17,
                             if_save_every_weights18,
                             version19,
+                            if_retrain_collapse20,
+                            if_stop_on_fit21,
                         ],
                         info3,
                         api_name="train_start",

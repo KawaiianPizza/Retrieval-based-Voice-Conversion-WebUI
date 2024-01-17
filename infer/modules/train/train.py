@@ -1,4 +1,7 @@
+import csv
+import math
 import os
+import shutil
 import sys
 import logging
 
@@ -77,7 +80,14 @@ from infer.lib.train.mel_processing import mel_spectrogram_torch, spec_to_mel_to
 from infer.lib.train.process_ckpt import savee
 
 global_step = 0
-
+bestEpochStep=0
+lastValue=1
+lowestValue = {"step": 0, "value": float("inf"), "epoch": 0}
+dirtyTb = []
+dirtyValues = []
+dirtySteps = []
+dirtyEpochs = []
+continued = False
 
 class EpochRecorder:
     def __init__(self):
@@ -93,6 +103,7 @@ class EpochRecorder:
 
 
 def main():
+    logger.info("\n")
     n_gpus = torch.cuda.device_count()
 
     if torch.cuda.is_available() == False and torch.backends.mps.is_available() == True:
@@ -218,7 +229,25 @@ def run(
         _, _, _, epoch_str = utils.load_checkpoint(
             utils.latest_checkpoint_path(hps.model_dir, "G_*.pth"), net_g, optim_g
         )
-        global_step = (epoch_str - 1) * len(train_loader)
+        global bestEpochStep, lastValue, lowestValue, continued
+        if hps.if_retrain_collapse:
+            if os.path.exists(f"{hps.model_dir}/col"):
+                with open(f"{hps.model_dir}/col", 'r') as f:
+                    bestEpochStep=global_step = int(f.readline().split(',')[0])
+                os.remove(f"{hps.model_dir}/col")
+                continued = True
+            if not os.path.exists(f"{hps.model_dir}/col") and os.path.exists(f"{hps.model_dir}/fitness.csv"):
+                latest = ""
+                with open(f'{hps.model_dir}/fitness.csv', 'r') as f:
+                    for line in f:
+                        if line.strip() != "":
+                            latest = line.split(',')
+                global_step = int(latest[1])
+                lastValue = float(latest[2])
+                lowestValue = {"step": int(latest[1]), "value": float(latest[2]), "epoch": int(latest[0])}
+                continued = True
+        else:
+            global_step = (epoch_str - 1) * len(train_loader)
         # epoch_str = 1
         # global_step = 0
     except:  # 如果首次不能加载，加载pretrain
@@ -322,28 +351,17 @@ def train_and_evaluate(
             # Make new cache
             for batch_idx, info in enumerate(train_loader):
                 # Unpack
-                if hps.if_f0 == 1:
-                    (
-                        phone,
-                        phone_lengths,
-                        pitch,
-                        pitchf,
-                        spec,
-                        spec_lengths,
-                        wave,
-                        wave_lengths,
-                        sid,
-                    ) = info
-                else:
-                    (
-                        phone,
-                        phone_lengths,
-                        spec,
-                        spec_lengths,
-                        wave,
-                        wave_lengths,
-                        sid,
-                    ) = info
+                (
+                    phone,
+                    phone_lengths,
+                    pitch,
+                    pitchf,
+                    spec,
+                    spec_lengths,
+                    wave,
+                    wave_lengths,
+                    sid,
+                ) = info if hps.if_f0 == 1 else info[:2] + info[4:]
                 # Load on CUDA
                 if torch.cuda.is_available():
                     phone = phone.cuda(rank, non_blocking=True)
@@ -502,7 +520,7 @@ def train_and_evaluate(
         scaler.step(optim_g)
         scaler.update()
 
-        if rank == 0:
+        if rank == 0 and not hps.if_stop_on_fit:
             if global_step % hps.train.log_interval == 0:
                 lr = optim_g.param_groups[0]["lr"]
                 logger.info(
@@ -518,83 +536,27 @@ def train_and_evaluate(
 
                 logger.info([global_step, lr])
                 logger.info(
-                    f"loss_disc={loss_disc:.3f}, loss_gen={loss_gen:.3f}, loss_fm={loss_fm:.3f},loss_mel={loss_mel:.3f}, loss_kl={loss_kl:.3f}"
+                    f"loss_disc={loss_disc:.3f}, loss_gen={loss_gen:.3f}, loss_fm={loss_fm:.3f}, loss_mel={loss_mel:.3f}, loss_kl={loss_kl:.3f}"
                 )
-                scalar_dict = {
-                    "loss/g/total": loss_gen_all,
-                    "loss/d/total": loss_disc,
-                    "learning_rate": lr,
-                    "grad_norm_d": grad_norm_d,
-                    "grad_norm_g": grad_norm_g,
-                }
-                scalar_dict.update(
-                    {
-                        "loss/g/fm": loss_fm,
-                        "loss/g/mel": loss_mel,
-                        "loss/g/kl": loss_kl,
-                    }
-                )
-
-                scalar_dict.update(
-                    {"loss/g/{}".format(i): v for i, v in enumerate(losses_gen)}
-                )
-                scalar_dict.update(
-                    {"loss/d_r/{}".format(i): v for i, v in enumerate(losses_disc_r)}
-                )
-                scalar_dict.update(
-                    {"loss/d_g/{}".format(i): v for i, v in enumerate(losses_disc_g)}
-                )
-                image_dict = {
-                    "slice/mel_org": utils.plot_spectrogram_to_numpy(
-                        y_mel[0].data.cpu().numpy()
-                    ),
-                    "slice/mel_gen": utils.plot_spectrogram_to_numpy(
-                        y_hat_mel[0].data.cpu().numpy()
-                    ),
-                    "all/mel": utils.plot_spectrogram_to_numpy(
-                        mel[0].data.cpu().numpy()
-                    ),
-                }
-                utils.summarize(
-                    writer=writer,
-                    global_step=global_step,
-                    images=image_dict,
-                    scalars=scalar_dict,
-                )
+                tensorboard_summarize(writer, mel, y_mel, y_hat_mel, loss_disc, losses_disc_r, losses_disc_g, grad_norm_d, loss_mel, loss_kl, loss_fm, losses_gen, loss_gen_all, grad_norm_g, lr)
         global_step += 1
     # /Run steps
 
-    if epoch % hps.save_every_epoch == 0 and rank == 0:
-        if hps.if_latest == 0:
-            utils.save_checkpoint(
-                net_g,
-                optim_g,
-                hps.train.learning_rate,
-                epoch,
-                os.path.join(hps.model_dir, "G_{}.pth".format(global_step)),
-            )
-            utils.save_checkpoint(
-                net_d,
-                optim_d,
-                hps.train.learning_rate,
-                epoch,
-                os.path.join(hps.model_dir, "D_{}.pth".format(global_step)),
-            )
-        else:
-            utils.save_checkpoint(
-                net_g,
-                optim_g,
-                hps.train.learning_rate,
-                epoch,
-                os.path.join(hps.model_dir, "G_{}.pth".format(2333333)),
-            )
-            utils.save_checkpoint(
-                net_d,
-                optim_d,
-                hps.train.learning_rate,
-                epoch,
-                os.path.join(hps.model_dir, "D_{}.pth".format(2333333)),
-            )
+    if hps.save_every_epoch != 0 and epoch % hps.save_every_epoch == 0 and rank == 0:
+        utils.save_checkpoint(
+            net_g,
+            optim_g,
+            hps.train.learning_rate,
+            epoch,
+            os.path.join(hps.model_dir, "G_{}.pth".format(global_step if hps.if_latest == 0 else 2333333)),
+        )
+        utils.save_checkpoint(
+            net_d,
+            optim_d,
+            hps.train.learning_rate,
+            epoch,
+            os.path.join(hps.model_dir, "D_{}.pth".format(global_step if hps.if_latest == 0 else 2333333)),
+        )
         if rank == 0 and hps.save_every_weights == "1":
             if hasattr(net_g, "module"):
                 ckpt = net_g.module.state_dict()
@@ -617,8 +579,131 @@ def train_and_evaluate(
                 )
             )
 
+    global dirtyTb, dirtySteps, dirtyValues, dirtyEpochs, bestEpochStep, lastValue, continued
+
+    if rank == 0 and hps.if_retrain_collapse and loss_gen_all / lastValue < 0.25:
+        logger.warning("Mode collapse detected, model quality may be hindered. More information here: https://rentry.org/RVC_making-models#mode-collapse")
+        logger.warning(f'loss_gen_all={loss_gen_all.item()}, last value={lastValue}, drop % {loss_gen_all.item() / lastValue * 100}')
+        tensorboard_summarize(writer_eval, mel, y_mel, y_hat_mel, loss_disc, losses_disc_r, losses_disc_g, grad_norm_d, loss_mel, loss_kl, loss_fm, losses_gen, loss_gen_all, grad_norm_g, optim_g.param_groups[0]["lr"])
+        if hps.if_retrain_collapse:
+            logger.info("Restarting training from last fit epoch..." if hps.train.batch_size else "Cannot avoid collapse! Exiting...")
+            with open(f"{hps.model_dir}/col", 'w') as f:
+                f.write(f'{bestEpochStep},{epoch}')
+            os._exit(15)
     if rank == 0:
+        lastValue = loss_gen_all.item()
+    
+    if rank == 0 and not hps.if_stop_on_fit:
         logger.info("====> Epoch: {} {}".format(epoch, epoch_recorder.record()))
+    if rank == 0 and hps.if_stop_on_fit:
+        lr = optim_g.param_groups[0]["lr"]
+        logger.info(
+            f"====> Epoch: {epoch} Step: {global_step} Learning Rate: {lr:.5} {epoch_recorder.record()}"
+        )
+        # Amor For Tensorboard display
+        if loss_mel > 75:
+            loss_mel = 75
+        if loss_kl > 9:
+            loss_kl = 9
+        # update tensorboard every epoch
+        logger.info(
+            f"loss_gen_all={loss_gen_all:.3f}, loss_disc={loss_disc:.3f}, loss_gen={loss_gen:.3f}, loss_fm={loss_fm:.3f}, loss_mel={loss_mel:.3f}, loss_kl={loss_kl:.3f}"
+        )
+        (image_dict, scalar_dict) = tensorboard_summarize(writer_eval, mel, y_mel, y_hat_mel, loss_disc, losses_disc_r, losses_disc_g, grad_norm_d, loss_mel, loss_kl, loss_fm, losses_gen, loss_gen_all, grad_norm_g, lr)
+        dirtyTb.append(
+            {
+                "global_step": global_step,
+                "images": image_dict,
+                "scalars": scalar_dict,
+            }
+        )
+        dirtySteps.append(global_step)
+        dirtyValues.append(loss_gen_all.item())
+        dirtyEpochs.append(epoch)
+
+        best, latest = getBestValue()
+        if not continued and epoch - best["epoch"] == 0:
+            for i in range(len(dirtyTb)):
+                utils.summarize(
+                    writer=writer,
+                    global_step=dirtyTb[i]["global_step"],
+                    images=dirtyTb[i]["images"],
+                    scalars=dirtyTb[i]["scalars"],
+                )
+                if not os.path.exists(f"{hps.model_dir}/fitness.csv"):
+                    with open(f"{hps.model_dir}/fitness.csv", 'w', newline='') as f:
+                        pass
+                with open(f"{hps.model_dir}/fitness.csv", 'a', newline='') as f:
+                    csvwriter = csv.writer(f)
+                    csvwriter.writerow([dirtyEpochs[i], dirtySteps[i], dirtyValues[i]])
+
+            dirtyTb.clear()
+            dirtySteps.clear()
+            dirtyValues.clear()
+            dirtyEpochs.clear()
+            if epoch > 10:
+                utils.save_checkpoint(
+                    net_g,
+                    optim_g,
+                    hps.train.learning_rate,
+                    epoch,
+                    os.path.join(hps.model_dir, "G_9999999.pth"),
+                )
+                utils.save_checkpoint(
+                    net_d,
+                    optim_d,
+                    hps.train.learning_rate,
+                    epoch,
+                    os.path.join(hps.model_dir, "D_9999999.pth"),
+                )
+                bestEpochStep = global_step
+                if hasattr(net_g, "module"):
+                    ckpt = net_g.module.state_dict()
+                else:
+                    ckpt = net_g.state_dict()
+                logger.info(
+                    f'Saving current fittest ckpt: {hps.name}_fittest:{savee(ckpt, hps.sample_rate, hps.if_f0, f"{hps.name}_fittest", epoch, hps.version, hps)}'
+                )
+        if epoch < 10:
+            message = f"Overtrain detection begins in {11 - epoch} epochs"
+        elif epoch == 10:
+            message = "Overtrain detection will begin next epoch"
+        elif epoch - best["epoch"] == 0 and not continued:
+            message = f"New best epoch!! [e{epoch}]\n"
+        else:
+            message = f'Last best epoch [e{best["epoch"]}] seen {epoch - best["epoch"]} epochs ago\n'
+        logger.info(message)
+        # if epoch - best["epoch"] >= max(len(train_loader), hps.overtrain_epochs):
+        change = best["value"] / latest["value"]
+        print(change, len(train_loader))
+        if change <= 0.95 and latest["epoch"] - best["epoch"] > max(len(train_loader), 20):
+            shutil.copy2(f"assets/weights/{hps.name}_fittest.pth", os.path.join(hps.model_dir, f"{hps.name}_{best['epoch']}.pth"))
+            if hasattr(net_g, "module"):
+                ckpt = net_g.module.state_dict()
+            else:
+                ckpt = net_g.state_dict()
+            logger.info(
+                "saving ckpt %s_overtrained_e%s:%s"
+                % (
+                    hps.name,
+                    epoch,
+                    savee(
+                        ckpt,
+                        hps.sample_rate,
+                        hps.if_f0,
+                        hps.name + "_overtrained_e%s" % (epoch),
+                        epoch,
+                        hps.version,
+                        hps,
+                    ),
+                )
+            )
+            shutil.copy2(f"assets/weights/{hps.name + '_overtrained_e%s' % (epoch)}.pth", os.path.join(hps.model_dir,f"{hps.name}_overtrained_e{epoch}.pth"))
+            logger.info(
+                f'No improvement found after epoch: [e{best["epoch"]}]. The program is closed.'
+            )
+            os._exit(2333333)
+
     if epoch >= hps.total_epoch and rank == 0:
         logger.info("Training is done. The program is closed.")
 
@@ -634,8 +719,87 @@ def train_and_evaluate(
                 )
             )
         )
+        if hps.if_stop_on_fit:
+            shutil.copy2(f"assets/weights/{hps.name}_fittest.pth", os.path.join(hps.model_dir, f"{hps.name}_{best['epoch']}.pth"))
+            shutil.copy2(f"assets/weights/{hps.name}.pth", os.path.join(hps.model_dir,f"{hps.name}_overtrained_e{epoch}.pth"))
         sleep(1)
         os._exit(2333333)
+    if continued and rank == 0:
+        continued = False
+
+def tensorboard_summarize(writer, mel, y_mel, y_hat_mel, loss_disc, losses_disc_r, losses_disc_g, grad_norm_d, loss_mel, loss_kl, loss_fm, losses_gen, loss_gen_all, grad_norm_g, lr):
+    scalar_dict = {
+            "loss/g/total": loss_gen_all,
+            "loss/d/total": loss_disc,
+            "learning_rate": lr,
+            "grad_norm_d": grad_norm_d,
+            "grad_norm_g": grad_norm_g,
+        }
+    scalar_dict.update(
+            {
+                "loss/g/fm": loss_fm,
+                "loss/g/mel": loss_mel,
+                "loss/g/kl": loss_kl,
+            }
+        )
+    scalar_dict.update({"loss/g/{}".format(i): v for i, v in enumerate(losses_gen)})
+    scalar_dict.update(
+            {"loss/d_r/{}".format(i): v for i, v in enumerate(losses_disc_r)}
+        )
+    scalar_dict.update(
+            {"loss/d_g/{}".format(i): v for i, v in enumerate(losses_disc_g)}
+        )
+    image_dict = {
+            "slice/mel_org": utils.plot_spectrogram_to_numpy(
+                y_mel[0].data.cpu().numpy()
+            ),
+            "slice/mel_gen": utils.plot_spectrogram_to_numpy(
+                y_hat_mel[0].data.cpu().numpy()
+            ),
+            "all/mel": utils.plot_spectrogram_to_numpy(mel[0].data.cpu().numpy()),
+        }
+    utils.summarize(
+            writer=writer,
+            global_step=global_step,
+            images=image_dict,
+            scalars=scalar_dict,
+        )
+    return (image_dict, scalar_dict)
+
+def smooth(scalars, weight):
+    last = 0
+    smoothed = []
+    num_acc = 0
+    for next_val in scalars:
+        last = last * weight + (1 - weight) * next_val
+        num_acc += 1
+        debias_weight = 1
+        if weight != 1:
+            debias_weight = 1 - math.pow(weight, num_acc)
+        smoothed_val = last / debias_weight
+        smoothed.append(smoothed_val)
+    return smoothed
+
+def getBestValue():
+    global lowestValue, dirtySteps, dirtyValues, dirtyEpochs
+    steps = []
+    values = []
+    epochs = []
+    if os.path.exists(f"{hps.model_dir}/fitness.csv"):
+        with open(f'{hps.model_dir}/fitness.csv', 'r') as f:
+            for line in f:
+                if line.strip() != "":
+                    line = line.split(',')
+                    epochs.append(int(line[0]))
+                    steps.append(line[1])
+                    values.append(float(line[2]))
+    steps += dirtySteps
+    values = smooth([*values,*dirtyValues], 0.99)
+    epochs += dirtyEpochs
+    if lowestValue["value"] >= values[-1] and epochs[-1] > 10:
+        lowestValue = {"step": steps[-1], "value": values[-1], "epoch": epochs[-1]}
+    return [lowestValue, {"step": steps[-1], "value": values[-1], "epoch": epochs[-1]}]
+
 
 
 if __name__ == "__main__":

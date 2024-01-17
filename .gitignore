@@ -21,3 +21,6 @@ rmvpe.pt
 
 # To set a Python version for the project
 .tool-versions
+
+
+/voices/*
