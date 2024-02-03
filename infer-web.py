@@ -582,8 +582,8 @@ def click_train(
             1 if if_cache_gpu17 == i18n("是") else 0,
             1 if if_save_every_weights18 == i18n("是") else 0,
             version19,
-            ("-sof %s" % (1 if if_stop_on_fit21 == True else 0)) if if_stop_on_fit21 else "",
-            ("-rc %s" % (1 if if_retrain_collapse20 == True else 0)) if if_retrain_collapse20 else "",
+            ("-sof %s" % (1 if if_stop_on_fit21 == i18n("是") else 0)) if if_stop_on_fit21 else "",
+            ("-rc %s" % (1 if if_retrain_collapse20 == i18n("是") else 0)) if if_retrain_collapse20 else "",
         )
     )
     logger.info(cmd)
@@ -594,7 +594,7 @@ def click_train(
     p.wait()
     batchSize = batch_size12
     colEpoch = 0
-    while if_retrain_collapse20:
+    while if_retrain_collapse20 == i18n("是"):
         if not os.path.exists(f"logs/{exp_dir1}/col"):
             break
         with open(f"logs/{exp_dir1}/col") as f:
@@ -718,6 +718,8 @@ def train1key(
     if_save_every_weights18,
     version19,
     gpus_rmvpe,
+    if_retrain_collapse20,
+    if_stop_on_fit21,
 ):
     infos = []
 
@@ -727,7 +729,7 @@ def train1key(
 
     # step1:处理数据
     yield get_info_str(i18n("step1:正在处理数据"))
-    [get_info_str(_) for _ in preprocess_dataset(os.path.abspath('voices\\'+trainset_dir4), exp_dir1, sr2, np7)]
+    [get_info_str(_) for _ in preprocess_dataset(trainset_dir4, exp_dir1, sr2, np7)]
 
     # step2a:提取音高
     yield get_info_str(i18n("step2:正在提取音高&正在提取特征"))
@@ -749,12 +751,14 @@ def train1key(
         total_epoch11,
         batch_size12,
         if_save_latest13,
-        ("pretrained%s\%s" % "_v2" if version19 == "v2" else "", pretrained_G14),
-        ("pretrained%s\%s" % "_v2" if version19 == "v2" else "", pretrained_D15),
+        pretrained_G14,
+        pretrained_D15,
         gpus16,
         if_cache_gpu17,
         if_save_every_weights18,
         version19,
+        if_retrain_collapse20,
+        if_stop_on_fit21
     )
     yield get_info_str(i18n("训练结束, 您可查看控制台训练日志或实验文件夹下的train.log"))
 
@@ -1141,7 +1145,7 @@ with gr.Blocks(title="RVC WebUI") as app:
                 exp_dir1 = gr.Textbox(label=i18n("输入实验名"), value="mi-test")
                 sr2 = gr.Radio(
                     label=i18n("目标采样率"),
-                    choices=["40k", "48k"],
+                    choices=["32k", "40k", "48k"],
                     value="40k",
                     interactive=True,
                 )
@@ -1298,16 +1302,16 @@ with gr.Blocks(title="RVC WebUI") as app:
                             value=20,
                             interactive=True,
                         )
-                        if_retrain_collapse20 = gr.Checkbox(
-                            label=i18n(
-                                "Reload from checkpoint before a mode collapse and try training it again"
-                            ),
-                            value=False,
+                        if_retrain_collapse20 = gr.Radio(
+                            label=i18n("在模式崩溃之前从检查点重新加载，并尝试重新进行训练"),
+                            choices=[i18n("是"), i18n("否")],
+                            value=i18n("否"),
                             interactive=True,
                         )
-                        if_stop_on_fit21 = gr.Checkbox(
-                            label=i18n("Stop training early if no improvement detected"),
-                            value=False,
+                        if_stop_on_fit21 = gr.Radio(
+                            label=i18n("如果未检测到改善，请提前停止训练"),
+                            choices=[i18n("是"), i18n("否")],
+                            value=i18n("否"),
                             interactive=True,
                         )
                 with gr.Row():
@@ -1402,6 +1406,8 @@ with gr.Blocks(title="RVC WebUI") as app:
                             if_save_every_weights18,
                             version19,
                             gpus_rmvpe,
+                            if_retrain_collapse20,
+                            if_stop_on_fit21,
                         ],
                         info3,
                         api_name="train_start_all",

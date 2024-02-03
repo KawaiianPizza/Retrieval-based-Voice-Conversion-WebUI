@@ -366,22 +366,8 @@ def get_hparams(init=True):
         help="if retraining mode collapses, 1 or 0",
     )
     parser.add_argument(
-        "-oe",
-        "--overtrain_epochs",
-        type=int,
-        required=False,
-        help="amount of epochs to overshoot for --stop_on_fit",
-    )
-    parser.add_argument(
         "-rc",
         "--retrain_collapse",
-        type=int,
-        required=False,
-        help="if retraining mode collapses, 1 or 0",
-    )
-    parser.add_argument(
-        "-ct",
-        "--collapse_threshold",
         type=int,
         required=False,
         help="if retraining mode collapses, 1 or 0",

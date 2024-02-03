@@ -79,14 +79,10 @@ from infer.lib.train.losses import (
 from infer.lib.train.mel_processing import mel_spectrogram_torch, spec_to_mel_torch
 from infer.lib.train.process_ckpt import savee
 
-global_step = 0
-bestEpochStep=0
+global_step, lowestEpochStep, drift_threshhold_hit = 0, 0, 0
 lastValue=1
-lowestValue = {"step": 0, "value": float("inf"), "epoch": 0}
-dirtyTb = []
-dirtyValues = []
-dirtySteps = []
-dirtyEpochs = []
+lowestEpoch = {"step": 0, "value": float("inf"), "epoch": 0}
+dirtyTbValuesStepsEpochs = ([],[],[],[])
 continued = False
 
 class EpochRecorder:
@@ -229,11 +225,11 @@ def run(
         _, _, _, epoch_str = utils.load_checkpoint(
             utils.latest_checkpoint_path(hps.model_dir, "G_*.pth"), net_g, optim_g
         )
-        global bestEpochStep, lastValue, lowestValue, continued
+        global lowestEpochStep, lastValue, lowestEpoch, continued
         if hps.if_retrain_collapse:
             if os.path.exists(f"{hps.model_dir}/col"):
                 with open(f"{hps.model_dir}/col", 'r') as f:
-                    bestEpochStep=global_step = int(f.readline().split(',')[0])
+                    lowestEpochStep=global_step = int(f.readline().split(',')[0])
                 os.remove(f"{hps.model_dir}/col")
                 continued = True
             if not os.path.exists(f"{hps.model_dir}/col") and os.path.exists(f"{hps.model_dir}/fitness.csv"):
@@ -244,7 +240,7 @@ def run(
                             latest = line.split(',')
                 global_step = int(latest[1])
                 lastValue = float(latest[2])
-                lowestValue = {"step": int(latest[1]), "value": float(latest[2]), "epoch": int(latest[0])}
+                lowestEpoch = {"step": int(latest[1]), "value": float(latest[2]), "epoch": int(latest[0])}
                 continued = True
         else:
             global_step = (epoch_str - 1) * len(train_loader)
@@ -579,16 +575,16 @@ def train_and_evaluate(
                 )
             )
 
-    global dirtyTb, dirtySteps, dirtyValues, dirtyEpochs, bestEpochStep, lastValue, continued
+    global dirtyTbValuesStepsEpochs, lowestEpoch, lowestEpochStep, lastValue, continued, drift_threshhold_hit
 
-    if rank == 0 and hps.if_retrain_collapse and loss_gen_all / lastValue < 0.25:
+    if rank == 0 and hps.if_retrain_collapse and loss_gen_all / lastValue < 0.20:
         logger.warning("Mode collapse detected, model quality may be hindered. More information here: https://rentry.org/RVC_making-models#mode-collapse")
         logger.warning(f'loss_gen_all={loss_gen_all.item()}, last value={lastValue}, drop % {loss_gen_all.item() / lastValue * 100}')
         tensorboard_summarize(writer_eval, mel, y_mel, y_hat_mel, loss_disc, losses_disc_r, losses_disc_g, grad_norm_d, loss_mel, loss_kl, loss_fm, losses_gen, loss_gen_all, grad_norm_g, optim_g.param_groups[0]["lr"])
         if hps.if_retrain_collapse:
             logger.info("Restarting training from last fit epoch..." if hps.train.batch_size else "Cannot avoid collapse! Exiting...")
             with open(f"{hps.model_dir}/col", 'w') as f:
-                f.write(f'{bestEpochStep},{epoch}')
+                f.write(f'{lowestEpochStep},{epoch}')
             os._exit(15)
     if rank == 0:
         lastValue = loss_gen_all.item()
@@ -610,37 +606,40 @@ def train_and_evaluate(
             f"loss_gen_all={loss_gen_all:.3f}, loss_disc={loss_disc:.3f}, loss_gen={loss_gen:.3f}, loss_fm={loss_fm:.3f}, loss_mel={loss_mel:.3f}, loss_kl={loss_kl:.3f}"
         )
         (image_dict, scalar_dict) = tensorboard_summarize(writer_eval, mel, y_mel, y_hat_mel, loss_disc, losses_disc_r, losses_disc_g, grad_norm_d, loss_mel, loss_kl, loss_fm, losses_gen, loss_gen_all, grad_norm_g, lr)
-        dirtyTb.append(
+        dirtyTbValuesStepsEpochs[0].append(
             {
                 "global_step": global_step,
                 "images": image_dict,
                 "scalars": scalar_dict,
             }
         )
-        dirtySteps.append(global_step)
-        dirtyValues.append(loss_gen_all.item())
-        dirtyEpochs.append(epoch)
+        dirtyTbValuesStepsEpochs[1].append(loss_gen_all.item())
+        dirtyTbValuesStepsEpochs[2].append(global_step)
+        dirtyTbValuesStepsEpochs[3].append(epoch)
 
-        best, latest = getBestValue()
-        if not continued and epoch - best["epoch"] == 0:
-            for i in range(len(dirtyTb)):
-                utils.summarize(
-                    writer=writer,
-                    global_step=dirtyTb[i]["global_step"],
-                    images=dirtyTb[i]["images"],
-                    scalars=dirtyTb[i]["scalars"],
-                )
-                if not os.path.exists(f"{hps.model_dir}/fitness.csv"):
-                    with open(f"{hps.model_dir}/fitness.csv", 'w', newline='') as f:
-                        pass
-                with open(f"{hps.model_dir}/fitness.csv", 'a', newline='') as f:
+        fitnessPath = f"{hps.model_dir}/fitness.csv"
+
+        lowest, latest = getLowestLatestEpochs(lowestEpoch, fitnessPath, *dirtyTbValuesStepsEpochs[1:])
+        lowestEpoch = lowest
+
+        if not continued and epoch - lowest["epoch"] == 0:
+            if not os.path.exists(fitnessPath):
+                with open(fitnessPath, 'w', newline='') as f:
+                    pass
+            with open(fitnessPath, 'a', newline='') as f:
+                for i in range(len(dirtyTbValuesStepsEpochs[0])):
+                    utils.summarize(
+                        writer=writer,
+                        global_step=dirtyTbValuesStepsEpochs[0][i]["global_step"],
+                        images=dirtyTbValuesStepsEpochs[0][i]["images"],
+                        scalars=dirtyTbValuesStepsEpochs[0][i]["scalars"],
+                    )
                     csvwriter = csv.writer(f)
-                    csvwriter.writerow([dirtyEpochs[i], dirtySteps[i], dirtyValues[i]])
+                    csvwriter.writerow([dirtyTbValuesStepsEpochs[1][i], dirtyTbValuesStepsEpochs[2][i], dirtyTbValuesStepsEpochs[3][i]])
 
-            dirtyTb.clear()
-            dirtySteps.clear()
-            dirtyValues.clear()
-            dirtyEpochs.clear()
+            for dirtyList in dirtyTbValuesStepsEpochs:
+                dirtyList.clear()
+
             if epoch > 10:
                 utils.save_checkpoint(
                     net_g,
@@ -656,28 +655,29 @@ def train_and_evaluate(
                     epoch,
                     os.path.join(hps.model_dir, "D_9999999.pth"),
                 )
-                bestEpochStep = global_step
+                lowestEpochStep = global_step
                 if hasattr(net_g, "module"):
                     ckpt = net_g.module.state_dict()
                 else:
                     ckpt = net_g.state_dict()
                 logger.info(
-                    f'Saving current fittest ckpt: {hps.name}_fittest:{savee(ckpt, hps.sample_rate, hps.if_f0, f"{hps.name}_fittest", epoch, hps.version, hps)}'
+                    f'Saving current lowest ckpt: {hps.name}_lowest:{savee(ckpt, hps.sample_rate, hps.if_f0, f"{hps.name}_lowest", epoch, hps.version, hps)}'
                 )
+
+        change = lowest["value"] / latest["value"]
+        
         if epoch < 10:
             message = f"Overtrain detection begins in {11 - epoch} epochs"
         elif epoch == 10:
             message = "Overtrain detection will begin next epoch"
-        elif epoch - best["epoch"] == 0 and not continued:
-            message = f"New best epoch!! [e{epoch}]\n"
-        else:
-            message = f'Last best epoch [e{best["epoch"]}] seen {epoch - best["epoch"]} epochs ago\n'
-        logger.info(message)
-        # if epoch - best["epoch"] >= max(len(train_loader), hps.overtrain_epochs):
-        change = best["value"] / latest["value"]
-        print(change, len(train_loader))
-        if change <= 0.95 and latest["epoch"] - best["epoch"] > max(len(train_loader), 20):
-            shutil.copy2(f"assets/weights/{hps.name}_fittest.pth", os.path.join(hps.model_dir, f"{hps.name}_{best['epoch']}.pth"))
+        elif not continued:
+            message = f'Performance slip: {((1 - change) * 100):.2f}%, stopping at 5%'
+        logger.info(message + '\n')
+
+        if (change <= 0.95
+            and latest["epoch"] - lowest["epoch"] > max(len(train_loader), 20)
+            and ++drift_threshhold_hit > 3):
+            shutil.copy2(f"assets/weights/{hps.name}_lowest.pth", os.path.join(hps.model_dir, f"{hps.name}_{lowest['epoch']}.pth"))
             if hasattr(net_g, "module"):
                 ckpt = net_g.module.state_dict()
             else:
@@ -691,18 +691,18 @@ def train_and_evaluate(
                         ckpt,
                         hps.sample_rate,
                         hps.if_f0,
-                        hps.name + "_overtrained_e%s" % (epoch),
+                        hps.name + "_overtrained_e" + epoch,
                         epoch,
                         hps.version,
                         hps,
                     ),
                 )
             )
-            shutil.copy2(f"assets/weights/{hps.name + '_overtrained_e%s' % (epoch)}.pth", os.path.join(hps.model_dir,f"{hps.name}_overtrained_e{epoch}.pth"))
-            logger.info(
-                f'No improvement found after epoch: [e{best["epoch"]}]. The program is closed.'
-            )
+            shutil.copy2(f"assets/weights/{hps.name}_overtrained_e{epoch}.pth", os.path.join(hps.model_dir,f"{hps.name}_overtrained_e{epoch}.pth"))
+            logger.info(f'No improvement found after epoch: [e{lowest["epoch"]}]. The program is closed.')
             os._exit(2333333)
+        else:
+            drift_threshhold_hit = 0
 
     if epoch >= hps.total_epoch and rank == 0:
         logger.info("Training is done. The program is closed.")
@@ -720,7 +720,7 @@ def train_and_evaluate(
             )
         )
         if hps.if_stop_on_fit:
-            shutil.copy2(f"assets/weights/{hps.name}_fittest.pth", os.path.join(hps.model_dir, f"{hps.name}_{best['epoch']}.pth"))
+            shutil.copy2(f"assets/weights/{hps.name}_lowest.pth", os.path.join(hps.model_dir, f"{hps.name}_{lowest['epoch']}.pth"))
             shutil.copy2(f"assets/weights/{hps.name}.pth", os.path.join(hps.model_dir,f"{hps.name}_overtrained_e{epoch}.pth"))
         sleep(1)
         os._exit(2333333)
@@ -767,9 +767,8 @@ def tensorboard_summarize(writer, mel, y_mel, y_hat_mel, loss_disc, losses_disc_
     return (image_dict, scalar_dict)
 
 def smooth(scalars, weight):
-    last = 0
+    last, num_acc = 0, 0
     smoothed = []
-    num_acc = 0
     for next_val in scalars:
         last = last * weight + (1 - weight) * next_val
         num_acc += 1
@@ -780,25 +779,26 @@ def smooth(scalars, weight):
         smoothed.append(smoothed_val)
     return smoothed
 
-def getBestValue():
-    global lowestValue, dirtySteps, dirtyValues, dirtyEpochs
-    steps = []
-    values = []
-    epochs = []
-    if os.path.exists(f"{hps.model_dir}/fitness.csv"):
-        with open(f'{hps.model_dir}/fitness.csv', 'r') as f:
+def getLowestLatestEpochs(lowestEpoch, fitnessPath, dirtyValues, dirtySteps, dirtyEpochs):
+    steps, values, epochs = [], [], []
+
+    if os.path.exists(fitnessPath):
+        with open(fitnessPath, 'r') as f:
             for line in f:
                 if line.strip() != "":
-                    line = line.split(',')
-                    epochs.append(int(line[0]))
-                    steps.append(line[1])
-                    values.append(float(line[2]))
+                    value, step, epoch = map(float, line.split(','))
+                    values.append(value)
+                    steps.append(int(step))
+                    epochs.append(int(epoch))
     steps += dirtySteps
     values = smooth([*values,*dirtyValues], 0.99)
     epochs += dirtyEpochs
-    if lowestValue["value"] >= values[-1] and epochs[-1] > 10:
-        lowestValue = {"step": steps[-1], "value": values[-1], "epoch": epochs[-1]}
-    return [lowestValue, {"step": steps[-1], "value": values[-1], "epoch": epochs[-1]}]
+
+    currentEpoch = {"step": steps[-1], "value": values[-1], "epoch": epochs[-1]}
+
+    if lowestEpoch["value"] >= currentEpoch["value"] and currentEpoch["epoch"] > 10:
+        lowestEpoch = currentEpoch
+    return [lowestEpoch, currentEpoch]
 
 
 

@@ -58,6 +58,8 @@
     "很遗憾您这没有能用的显卡来支持您训练": "Unfortunately, there is no compatible GPU available to support your training.",
     "性能设置": "Performance settings",
     "总训练轮数total_epoch": "Total training epochs (total_epoch):",
+    "在模式崩溃之前从检查点重新加载，并尝试重新进行训练": "Reload from checkpoint before a mode collapse and try training it again",
+    "如果未检测到改善，请提前停止训练": "Stop training early if no improvement detected",
     "批量推理": "Batch Inference",
     "批量转换, 输入待转换音频文件夹, 或上传多个音频文件, 在指定文件夹(默认opt)下输出转换的音频. ": "Batch conversion. Enter the folder containing the audio files to be converted or upload multiple audio files. The converted audio will be output in the specified folder (default: 'opt').",
     "指定输出主人声文件夹": "Specify the output folder for vocals:",
