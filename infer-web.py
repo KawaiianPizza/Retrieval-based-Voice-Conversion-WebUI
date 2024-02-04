@@ -1315,27 +1315,19 @@ with gr.Blocks(title="RVC WebUI") as app:
                             interactive=True,
                         )
                 with gr.Row():
-                    # pretrained_G14 = gr.Textbox(
-                    #     label=i18n("加载预训练底模G路径"),
-                    #     value="assets/pretrained_v2/f0G40k.pth",
-                    #     interactive=True,
-                    # )
                     pretrained_G14 = gr.Dropdown(
                         label=i18n("加载预训练底模G路径"),
                         value="f0G40k.pth",
                         choices=list_pretrained('G', version19.value, sr2.value, if_f0_3.value),
                         interactive=True,
+                        allow_custom_value=True
                     )
-                    # pretrained_D15 = gr.Textbox(
-                    #     label=i18n("加载预训练底模D路径"),
-                    #     value="assets/pretrained_v2/f0D40k.pth",
-                    #     interactive=True,
-                    # )
                     pretrained_D15 = gr.Dropdown(
                         label=i18n("加载预训练底模D路径"),
                         value="f0D40k.pth",
                         choices=list_pretrained('D',version19.value, sr2.value, if_f0_3.value),
                         interactive=True,
+                        allow_custom_value=True
                     )
                     sr2.change(
                         change_sr2,
