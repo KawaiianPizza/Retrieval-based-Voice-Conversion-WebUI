@@ -99,7 +99,6 @@ class EpochRecorder:
 
 
 def main():
-    logger.info("\n")
     n_gpus = torch.cuda.device_count()
 
     if torch.cuda.is_available() == False and torch.backends.mps.is_available() == True:
@@ -112,6 +111,7 @@ def main():
     os.environ["MASTER_PORT"] = str(randint(20000, 55555))
     children = []
     logger = utils.get_logger(hps.model_dir)
+    logger.info("\n")
     for i in range(n_gpus):
         subproc = mp.Process(
             target=run,
@@ -671,33 +671,35 @@ def train_and_evaluate(
             message = f'Performance slip: {((1 - change) * 100):.2f}%, stopping at 5%'
         logger.info(message + '\n')
 
-        if (change <= 0.95
-            and latest["epoch"] - lowest["epoch"] > max(len(train_loader), 20)
-            and ++drift_threshhold_hit > 3):
-            shutil.copy2(f"assets/weights/{hps.name}_lowest.pth", os.path.join(hps.model_dir, f"{hps.name}_{lowest['epoch']}.pth"))
-            if hasattr(net_g, "module"):
-                ckpt = net_g.module.state_dict()
-            else:
-                ckpt = net_g.state_dict()
-            logger.info(
-                "saving ckpt %s_overtrained_e%s:%s"
-                % (
-                    hps.name,
-                    epoch,
-                    savee(
-                        ckpt,
-                        hps.sample_rate,
-                        hps.if_f0,
-                        hps.name + "_overtrained_e" + epoch,
+        if (change <= 0.95 and latest["epoch"] - lowest["epoch"] > max(len(train_loader), 20)):
+            if drift_threshhold_hit >= 3:
+                lowest_weights_path = f"assets/weights/{hps.name}_lowest.pth"
+                shutil.copy2(lowest_weights_path, os.path.join(hps.model_dir, f"{hps.name}_{lowest['epoch']}.pth"))
+
+                ckpt = net_g.module.state_dict() if hasattr(net_g, "module") else net_g.state_dict()
+                logger.info(
+                    "saving ckpt %s_overtrained_e%s:%s"
+                    % (
+                        hps.name,
                         epoch,
-                        hps.version,
-                        hps,
-                    ),
+                        savee(
+                            ckpt,
+                            hps.sample_rate,
+                            hps.if_f0,
+                            f"{hps.name}_overtrained_e{epoch}",
+                            epoch,
+                            hps.version,
+                            hps,
+                        ),
+                    )
                 )
-            )
-            shutil.copy2(f"assets/weights/{hps.name}_overtrained_e{epoch}.pth", os.path.join(hps.model_dir,f"{hps.name}_overtrained_e{epoch}.pth"))
-            logger.info(f'No improvement found after epoch: [e{lowest["epoch"]}]. The program is closed.')
-            os._exit(2333333)
+
+                overtrained_path = f"assets/weights/{hps.name}_overtrained_e{epoch}.pth"
+                shutil.copy2(overtrained_path, os.path.join(hps.model_dir, f"{hps.name}_overtrained_e{epoch}.pth"))
+                logger.info(f'No improvement found after epoch: [e{lowest["epoch"]}]. The program is closed.')
+                os._exit(2333333)
+            else:
+                drift_threshhold_hit += 1
         else:
             drift_threshhold_hit = 0
 
