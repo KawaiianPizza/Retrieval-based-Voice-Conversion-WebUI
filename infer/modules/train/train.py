@@ -672,7 +672,7 @@ def train_and_evaluate(
         logger.info(message + '\n')
 
         if (change <= 0.95 and latest["epoch"] - lowest["epoch"] > max(len(train_loader), 20)):
-            if drift_threshhold_hit >= 3:
+            if drift_threshhold_hit >= 2:
                 lowest_weights_path = f"assets/weights/{hps.name}_lowest.pth"
                 shutil.copy2(lowest_weights_path, os.path.join(hps.model_dir, f"{hps.name}_{lowest['epoch']}.pth"))
 
@@ -696,7 +696,7 @@ def train_and_evaluate(
 
                 overtrained_path = f"assets/weights/{hps.name}_overtrained_e{epoch}.pth"
                 shutil.copy2(overtrained_path, os.path.join(hps.model_dir, f"{hps.name}_overtrained_e{epoch}.pth"))
-                logger.info(f'No improvement found after epoch: [e{lowest["epoch"]}]. The program is closed.')
+                logger.info(f'Lowest epoch: [e{lowest["epoch"]}], Latest epoch: [e{latest["epoch"]}]. The program is closed.')
                 os._exit(2333333)
             else:
                 drift_threshhold_hit += 1
