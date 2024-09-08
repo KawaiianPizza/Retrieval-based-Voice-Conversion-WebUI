@@ -1339,7 +1339,7 @@ with gr.Blocks(title="RVC WebUI") as app:
                     with gr.Column():
                         total_epoch11 = gr.Slider(
                             minimum=2,
-                            maximum=1000,
+                            maximum=10000,
                             step=1,
                             label=i18n("总训练轮数total_epoch"),
                             value=20,

@@ -222,11 +222,11 @@ def run(rank, n_gpus, hps, logger: logging.Logger):
         _, _, _, epoch_str = utils.load_checkpoint(
             utils.latest_checkpoint_path(hps.model_dir, "G_*.pth"), net_g, optim_g
         )
-        global lowestEpochStep, lastValue, lowestEpoch, continued
+        global latestEpochStep, lastValue, lowestEpoch, continued
         if hps.if_retrain_collapse:
             if os.path.exists(f"{hps.model_dir}/col"):
                 with open(f"{hps.model_dir}/col", 'r') as f:
-                    lowestEpochStep=global_step = int(f.readline().split(',')[0])
+                    latestEpochStep = global_step = int(f.readline().split(',')[2])
                 os.remove(f"{hps.model_dir}/col")
                 continued = True
             if not os.path.exists(f"{hps.model_dir}/col") and os.path.exists(f"{hps.model_dir}/fitness.csv"):
@@ -236,8 +236,8 @@ def run(rank, n_gpus, hps, logger: logging.Logger):
                         if line.strip() != "":
                             latest = line.split(',')
                 global_step = int(latest[1])
-                lastValue = float(latest[2])
-                lowestEpoch = {"step": int(latest[1]), "value": float(latest[2]), "epoch": int(latest[0])}
+                lastValue = float(latest[0])
+                lowestEpoch = {"step": int(latest[1]), "value": float(latest[0]), "epoch": int(latest[2])}
                 continued = True
         else:
             global_step = (epoch_str - 1) * len(train_loader)
@@ -663,6 +663,7 @@ def train_and_evaluate(
 
         change = lowest["value"] / latest["value"]
         
+        message = ""
         if epoch < 10:
             message = f"Overtrain detection begins in {11 - epoch} epochs"
         elif epoch == 10:
@@ -721,6 +722,36 @@ def train_and_evaluate(
         if hps.if_stop_on_fit:
             shutil.copy2(f"assets/weights/{hps.name}_lowest.pth", os.path.join(hps.model_dir, f"{hps.name}_{lowest['epoch']}.pth"))
             shutil.copy2(f"assets/weights/{hps.name}.pth", os.path.join(hps.model_dir,f"{hps.name}_overtrained_e{epoch}.pth"))
+            utils.save_checkpoint(
+                net_g,
+                optim_g,
+                hps.train.learning_rate,
+                epoch,
+                os.path.join(hps.model_dir, "G_9999999.pth"),
+            )
+            utils.save_checkpoint(
+                net_d,
+                optim_d,
+                hps.train.learning_rate,
+                epoch,
+                os.path.join(hps.model_dir, "D_9999999.pth"),
+            )
+            if not os.path.exists(fitnessPath):
+                with open(fitnessPath, 'w', newline='') as f:
+                    pass
+            with open(fitnessPath, 'a', newline='') as f:
+                for i in range(len(dirtyTbValuesStepsEpochs[0])):
+                    utils.summarize(
+                        writer=writer,
+                        global_step=dirtyTbValuesStepsEpochs[0][i]["global_step"],
+                        images=dirtyTbValuesStepsEpochs[0][i]["images"],
+                        scalars=dirtyTbValuesStepsEpochs[0][i]["scalars"],
+                    )
+                    csvwriter = csv.writer(f)
+                    csvwriter.writerow([dirtyTbValuesStepsEpochs[1][i], dirtyTbValuesStepsEpochs[2][i], dirtyTbValuesStepsEpochs[3][i]])
+
+            for dirtyList in dirtyTbValuesStepsEpochs:
+                dirtyList.clear()
         sleep(1)
         os._exit(2333333)
     if continued and rank == 0:
