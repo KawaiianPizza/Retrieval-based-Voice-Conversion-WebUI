@@ -24,3 +24,14 @@ rmvpe.pt
 
 
 /voices/*
+/runtime
+/assets/weights/*
+ffmpeg.*
+ffprobe.*
+
+
+/voices/*
+/runtime
+/assets/weights/*
+ffmpeg.*
+ffprobe.*
